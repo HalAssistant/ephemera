@@ -405,6 +405,10 @@ function generateWorldName() {
 
 const worldName = generateWorldName();
 
+// === MOON POSITION (pre-computed, not per-frame) ===
+const moonPosX = 0.6 + rng() * 0.3;
+const moonSizeBase = 15 + rng() * 10;
+
 // === STARS ===
 const stars = [];
 const isNight = W.timeOfDay < 0.25 || W.timeOfDay > 0.75;
@@ -671,9 +675,9 @@ function drawStars(time) {
 function drawMoon(time) {
   if (W.timeOfDay > 0.3 && W.timeOfDay < 0.7) return;
   
-  const moonX = width * (0.6 + rng() * 0.3); // Seeded position
+  const moonX = width * moonPosX;
   const moonY = height * 0.1 + Math.sin(W.timeOfDay * Math.PI) * height * 0.15;
-  const moonSize = 15 + rng() * 10;
+  const moonSize = moonSizeBase;
   
   // Glow
   const glow = ctx.createRadialGradient(moonX, moonY, moonSize, moonX, moonY, moonSize * 4);
