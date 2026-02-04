@@ -11,7 +11,7 @@
     background: #000;
     overflow: hidden;
     font-family: 'Georgia', serif;
-    cursor: default;
+    cursor: crosshair;
     user-select: none;
   }
   
@@ -242,6 +242,10 @@ const W = {
   hasMeteors: rng() > 0.85,
   hasFireflies: false,
   snowLevel: 0,
+  
+  // Moon & seasons
+  moonPhase: rng(),
+  isAutumn: false,
 };
 
 // Derive biome
@@ -251,6 +255,9 @@ if (W.temperature < -0.3) {
 }
 if (W.temperature > 0.3 && W.timeOfDay > 0.7) {
   W.hasFireflies = rng() > 0.3;
+}
+if (W.temperature > -0.2 && W.temperature < 0.4 && W.moisture < 0.3 && rng() > 0.45) {
+  W.isAutumn = true;
 }
 
 // === CANVAS SETUP ===
@@ -268,6 +275,28 @@ function resize() {
 }
 resize();
 window.addEventListener('resize', resize);
+
+// === MOUSE TRACKING (parallax + interaction) ===
+let mouseX = 0.5, mouseY = 0.5;
+let targetMouseX = 0.5, targetMouseY = 0.5;
+const PARALLAX = 25;
+
+canvas.addEventListener('mousemove', (e) => {
+  targetMouseX = e.clientX / width;
+  targetMouseY = e.clientY / height;
+});
+
+function updateMouse() {
+  mouseX += (targetMouseX - mouseX) * 0.04;
+  mouseY += (targetMouseY - mouseY) * 0.04;
+}
+
+function parallaxOffset(depth) {
+  return {
+    dx: (mouseX - 0.5) * PARALLAX * depth,
+    dy: (mouseY - 0.5) * PARALLAX * depth * 0.25,
+  };
+}
 
 // === COLOR PALETTES ===
 function lerpColor(a, b, t) {
@@ -558,6 +587,64 @@ if (W.hasAurora) {
   }
 }
 
+// === CLICK RIPPLES ===
+const clickRipples = [];
+
+canvas.addEventListener('click', (e) => {
+  const waterY = W.hasWater ? height - W.waterLevel * height * 0.5 : height + 10;
+  if (W.hasWater && e.clientY > waterY) {
+    clickRipples.push({
+      x: e.clientX,
+      y: e.clientY,
+      radius: 0,
+      maxRadius: 60 + Math.random() * 80,
+      age: 0,
+      maxAge: 150,
+    });
+    setTimeout(() => {
+      clickRipples.push({
+        x: e.clientX + (Math.random() - 0.5) * 10,
+        y: e.clientY + (Math.random() - 0.5) * 5,
+        radius: 0,
+        maxRadius: 30 + Math.random() * 40,
+        age: 0,
+        maxAge: 100,
+      });
+    }, 200);
+  }
+});
+
+function drawClickRipples() {
+  for (let i = clickRipples.length - 1; i >= 0; i--) {
+    const r = clickRipples[i];
+    r.age++;
+    r.radius = (r.age / r.maxAge) * r.maxRadius;
+    
+    if (r.age >= r.maxAge) {
+      clickRipples.splice(i, 1);
+      continue;
+    }
+    
+    const fade = 1 - r.age / r.maxAge;
+    const alpha = fade * fade * 0.5;
+    const color = isNight ? `rgba(140, 170, 220, ${alpha})` : `rgba(220, 240, 255, ${alpha})`;
+    
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2 * fade + 0.3;
+    ctx.beginPath();
+    ctx.ellipse(r.x, r.y, r.radius, r.radius * 0.4, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    if (r.radius > 15) {
+      ctx.strokeStyle = isNight ? `rgba(140, 170, 220, ${alpha * 0.4})` : `rgba(220, 240, 255, ${alpha * 0.4})`;
+      ctx.lineWidth = 0.8 * fade;
+      ctx.beginPath();
+      ctx.ellipse(r.x, r.y, r.radius * 0.55, r.radius * 0.22, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+}
+
 // === DRAWING FUNCTIONS ===
 
 function drawSky(time) {
@@ -600,6 +687,23 @@ function drawMoon(time) {
   ctx.beginPath();
   ctx.arc(moonX, moonY, moonSize, 0, Math.PI * 2);
   ctx.fill();
+  
+  // Moon phase (crescent shadow)
+  const crescentAmt = Math.abs(W.moonPhase - 0.5) * 2;
+  if (crescentAmt > 0.08) {
+    const shadowDir = W.moonPhase > 0.5 ? 1 : -1;
+    const shadowOffset = shadowDir * moonSize * crescentAmt * 1.6;
+    const skyTop = getSkyColors().top;
+    ctx.fillStyle = rgb(skyTop);
+    ctx.beginPath();
+    ctx.arc(moonX + shadowOffset, moonY, moonSize * 1.01, 0, Math.PI * 2);
+    ctx.fill();
+    const cGlow = ctx.createRadialGradient(moonX, moonY, moonSize * 0.5, moonX, moonY, moonSize * 2.5);
+    cGlow.addColorStop(0, `rgba(200, 210, 255, ${0.06 * (1 - crescentAmt)})`);
+    cGlow.addColorStop(1, 'rgba(200, 210, 255, 0)');
+    ctx.fillStyle = cGlow;
+    ctx.fillRect(moonX - moonSize * 3, moonY - moonSize * 3, moonSize * 6, moonSize * 6);
+  }
 }
 
 function drawSun() {
@@ -681,22 +785,23 @@ function drawClouds(time) {
 }
 
 function drawMountains(skyColors) {
-  // Background mountain range
+  // Background mountain range with parallax
   const layers = [
-    { scale: 0.001, heightMul: 0.25, offset: 100, alpha: 0.15 },
-    { scale: 0.002, heightMul: 0.3, offset: 200, alpha: 0.25 },
-    { scale: 0.003, heightMul: 0.2, offset: 300, alpha: 0.35 },
+    { scale: 0.001, heightMul: 0.25, offset: 100, alpha: 0.15, depth: 0.08 },
+    { scale: 0.002, heightMul: 0.3, offset: 200, alpha: 0.25, depth: 0.15 },
+    { scale: 0.003, heightMul: 0.2, offset: 300, alpha: 0.35, depth: 0.25 },
   ];
   
   for (const layer of layers) {
+    const p = parallaxOffset(layer.depth);
     const color = lerpColor(skyColors.ambient, [30, 30, 50], layer.alpha);
     ctx.fillStyle = rgba(color, 0.6);
     ctx.beginPath();
     ctx.moveTo(0, height);
     
     for (let x = 0; x <= width; x += 3) {
-      const h = fbm(x * layer.scale + layer.offset + W.terrainOffset, 0.5, 4) * 0.5 + 0.5;
-      const y = height - h * height * layer.heightMul - height * 0.15;
+      const h = fbm((x - p.dx) * layer.scale + layer.offset + W.terrainOffset, 0.5, 4) * 0.5 + 0.5;
+      const y = height - h * height * layer.heightMul - height * 0.15 + p.dy;
       ctx.lineTo(x, y);
     }
     
@@ -723,6 +828,10 @@ function drawTerrain(time, skyColors) {
     // Tropical
     groundColor = [50, 140, 60];
     groundColorDark = [30, 100, 40];
+  } else if (W.isAutumn) {
+    // Autumn
+    groundColor = [140, 120, 50];
+    groundColorDark = [110, 85, 35];
   } else {
     // Temperate
     groundColor = [70, 140, 50];
@@ -750,8 +859,43 @@ function drawTerrain(time, skyColors) {
   ctx.fillStyle = terrainGrad;
   ctx.fill();
   
-  // Draw water
+  // Draw water reflections + water
   if (W.hasWater) {
+    // Reflected terrain + sky (flipped, faded)
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, waterY, width, height - waterY);
+    ctx.clip();
+    ctx.translate(0, waterY * 2);
+    ctx.scale(1, -1);
+    
+    // Reflected sky
+    ctx.globalAlpha = 0.18;
+    const rSkyColors = getSkyColors();
+    const rSkyGrad = ctx.createLinearGradient(0, 0, 0, height);
+    rSkyGrad.addColorStop(0, rgb(rSkyColors.top));
+    rSkyGrad.addColorStop(1, rgb(rSkyColors.bottom));
+    ctx.fillStyle = rSkyGrad;
+    ctx.fillRect(0, 0, width, height);
+    
+    // Reflected terrain
+    ctx.globalAlpha = 0.15;
+    ctx.beginPath();
+    ctx.moveTo(0, height);
+    for (const tp of terrainPoints) {
+      ctx.lineTo(tp.x, height - tp.h * height * 0.5);
+    }
+    ctx.lineTo(width, height);
+    ctx.closePath();
+    const rTerrGrad = ctx.createLinearGradient(0, height * 0.4, 0, height);
+    rTerrGrad.addColorStop(0, rgb(groundColor));
+    rTerrGrad.addColorStop(1, rgb(groundColorDark));
+    ctx.fillStyle = rTerrGrad;
+    ctx.fill();
+    
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    
     const waterGrad = ctx.createLinearGradient(0, waterY, 0, height);
     
     if (isNight) {
@@ -791,6 +935,8 @@ function drawGrass(time) {
     grassColor = [180, 190, 200]; // Frost
   } else if (W.temperature > 0.5 && W.moisture < -0.2) {
     grassColor = [180, 160, 100]; // Dry
+  } else if (W.isAutumn) {
+    grassColor = [160, 130, 50]; // Autumn gold
   } else {
     grassColor = [60, 160, 50]; // Green
   }
@@ -867,7 +1013,9 @@ function drawTree(tree, time) {
     ctx.stroke();
     
     // Canopy — multiple overlapping circles for fullness
-    const canopyColor = W.temperature > 0 ? [35, 125, 35] : [45, 115, 25];
+    const canopyColor = W.isAutumn 
+      ? (rng() > 0.5 ? [200, 100, 20] : [190, 60, 30])
+      : W.temperature > 0 ? [35, 125, 35] : [45, 115, 25];
     const canopyY = y - trunkH - 10 * s;
     const cr = 16 * s;
     
@@ -1036,6 +1184,8 @@ const flowers = [];
 if (W.temperature > -0.2 && W.moisture > -0.3) {
   const flowerColors = W.temperature > 0.3
     ? [[255,100,120],[255,180,50],[255,220,100],[200,80,180]] // Tropical
+    : W.isAutumn
+    ? [[200,80,20],[220,150,30],[180,50,20],[255,180,50]] // Autumn reds/golds
     : [[220,180,220],[255,255,150],[200,220,255],[255,200,200]]; // Temperate
   
   for (let i = 0; i < terrainPoints.length; i++) {
@@ -1203,6 +1353,8 @@ function render(timestamp) {
   if (!startTime) startTime = timestamp;
   const time = (timestamp - startTime) / 1000;
   
+  updateMouse();
+  
   const skyColors = drawSky(time);
   
   if (isNight) drawStars(time);
@@ -1217,6 +1369,7 @@ function render(timestamp) {
   drawGrass(time);
   drawFlowers(time);
   drawTrees(time);
+  drawClickRipples();
   updateAndDrawParticles(time, 1/60);
   drawFog();
   drawVignette();
