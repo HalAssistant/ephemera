@@ -1,0 +1,1292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ephemera</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  body {
+    background: #000;
+    overflow: hidden;
+    font-family: 'Georgia', serif;
+    cursor: default;
+    user-select: none;
+  }
+  
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+  }
+  
+  #overlay {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 24px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    pointer-events: none;
+    z-index: 10;
+  }
+  
+  #world-info {
+    opacity: 0;
+    transition: opacity 4s ease-in;
+  }
+  
+  #world-info.visible {
+    opacity: 1;
+  }
+  
+  #world-name {
+    font-size: 14px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  
+  #world-age {
+    font-size: 11px;
+    letter-spacing: 1px;
+    opacity: 0.6;
+  }
+  
+  #philosophy {
+    font-size: 11px;
+    font-style: italic;
+    letter-spacing: 0.5px;
+    opacity: 0;
+    transition: opacity 6s ease-in;
+    text-align: right;
+    max-width: 300px;
+    line-height: 1.6;
+  }
+  
+  #philosophy.visible {
+    opacity: 0.5;
+  }
+  
+  #intro {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+    z-index: 100;
+    transition: opacity 3s ease-out;
+  }
+  
+  #intro.fading {
+    opacity: 0;
+    pointer-events: none;
+  }
+  
+  #intro-text {
+    font-size: 13px;
+    letter-spacing: 2px;
+    opacity: 0;
+    animation: fadeWord 2.5s ease-in forwards;
+    animation-delay: 0.5s;
+  }
+</style>
+</head>
+<body>
+<div id="intro">
+  <div id="intro-text"></div>
+</div>
+<canvas id="world"></canvas>
+<div id="overlay">
+  <div id="world-info">
+    <div id="world-name"></div>
+    <div id="world-age"></div>
+  </div>
+  <div id="philosophy"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// EPHEMERA — A world that exists only for you
+// ═══════════════════════════════════════════════════════════════
+
+// === SEED ===
+// The world's DNA. Based on the exact millisecond you arrived.
+// Never stored. Never repeated. Never recoverable.
+const BIRTH = Date.now();
+const SEED = BIRTH ^ (BIRTH >>> 16) ^ (Math.random() * 0xFFFFFFFF >>> 0);
+
+// === PRNG (Mulberry32) ===
+function mulberry32(seed) {
+  let s = seed | 0;
+  return function() {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(SEED);
+
+// === SIMPLEX NOISE (2D) ===
+const SimplexNoise = (function() {
+  const grad3 = [
+    [1,1],[-1,1],[1,-1],[-1,-1],
+    [1,0],[-1,0],[0,1],[0,-1]
+  ];
+  
+  // Build permutation table from seed
+  const perm = new Uint8Array(512);
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  // Fisher-Yates with seeded RNG
+  for (let i = 255; i > 0; i--) {
+    const j = (rng() * (i + 1)) | 0;
+    [p[i], p[j]] = [p[j], p[i]];
+  }
+  for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+  
+  const F2 = 0.5 * (Math.sqrt(3) - 1);
+  const G2 = (3 - Math.sqrt(3)) / 6;
+  
+  return function noise2D(x, y) {
+    const s = (x + y) * F2;
+    const i = Math.floor(x + s);
+    const j = Math.floor(y + s);
+    const t = (i + j) * G2;
+    const X0 = i - t, Y0 = j - t;
+    const x0 = x - X0, y0 = y - Y0;
+    
+    let i1, j1;
+    if (x0 > y0) { i1 = 1; j1 = 0; }
+    else { i1 = 0; j1 = 1; }
+    
+    const x1 = x0 - i1 + G2, y1 = y0 - j1 + G2;
+    const x2 = x0 - 1 + 2 * G2, y2 = y0 - 1 + 2 * G2;
+    
+    const ii = i & 255, jj = j & 255;
+    
+    let n0 = 0, n1 = 0, n2 = 0;
+    
+    let t0 = 0.5 - x0*x0 - y0*y0;
+    if (t0 > 0) {
+      t0 *= t0;
+      const g = grad3[perm[ii + perm[jj]] & 7];
+      n0 = t0 * t0 * (g[0]*x0 + g[1]*y0);
+    }
+    
+    let t1 = 0.5 - x1*x1 - y1*y1;
+    if (t1 > 0) {
+      t1 *= t1;
+      const g = grad3[perm[ii + i1 + perm[jj + j1]] & 7];
+      n1 = t1 * t1 * (g[0]*x1 + g[1]*y1);
+    }
+    
+    let t2 = 0.5 - x2*x2 - y2*y2;
+    if (t2 > 0) {
+      t2 *= t2;
+      const g = grad3[perm[ii + 1 + perm[jj + 1]] & 7];
+      n2 = t2 * t2 * (g[0]*x2 + g[1]*y2);
+    }
+    
+    return 70 * (n0 + n1 + n2); // Returns -1 to 1
+  };
+})();
+
+// Multi-octave noise
+function fbm(x, y, octaves = 5, lacunarity = 2, persistence = 0.5) {
+  let value = 0, amplitude = 1, frequency = 1, max = 0;
+  for (let i = 0; i < octaves; i++) {
+    value += amplitude * SimplexNoise(x * frequency, y * frequency);
+    max += amplitude;
+    amplitude *= persistence;
+    frequency *= lacunarity;
+  }
+  return value / max;
+}
+
+// === WORLD PARAMETERS ===
+// Generated once from the seed. These define everything.
+const W = {
+  // Time of day: 0 = midnight, 0.25 = dawn, 0.5 = noon, 0.75 = dusk
+  timeOfDay: rng(),
+  
+  // Climate
+  temperature: rng() * 2 - 1,     // -1 (arctic) to 1 (tropical)
+  moisture: rng() * 2 - 1,         // -1 (arid) to 1 (lush)
+  
+  // Terrain shape — gentler scale for rolling hills, not spikes
+  terrainScale: 0.001 + rng() * 0.002,
+  terrainOffset: rng() * 1000,
+  hilliness: 0.2 + rng() * 0.4,
+  
+  // Water level
+  waterLevel: 0.35 + rng() * 0.25,
+  hasWater: rng() > 0.2,
+  
+  // Vegetation density
+  treeDensity: rng(),
+  grassDensity: rng(),
+  
+  // Atmosphere
+  cloudCover: rng(),
+  windSpeed: rng() * 2 - 0.5,
+  hasFog: rng() > 0.7,
+  
+  // Special features
+  hasAurora: false,
+  hasMeteors: rng() > 0.85,
+  hasFireflies: false,
+  snowLevel: 0,
+};
+
+// Derive biome
+if (W.temperature < -0.3) {
+  W.snowLevel = 0.3 + (-W.temperature - 0.3) * 0.5;
+  W.hasAurora = rng() > 0.5 && (W.timeOfDay > 0.75 || W.timeOfDay < 0.25);
+}
+if (W.temperature > 0.3 && W.timeOfDay > 0.7) {
+  W.hasFireflies = rng() > 0.3;
+}
+
+// === CANVAS SETUP ===
+const canvas = document.getElementById('world');
+const ctx = canvas.getContext('2d');
+let width, height, dpr;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  width = window.innerWidth;
+  height = window.innerHeight;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// === COLOR PALETTES ===
+function lerpColor(a, b, t) {
+  return [
+    a[0] + (b[0] - a[0]) * t,
+    a[1] + (b[1] - a[1]) * t,
+    a[2] + (b[2] - a[2]) * t,
+  ];
+}
+
+function rgb(c) {
+  return `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+}
+
+function rgba(c, a) {
+  return `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+}
+
+function getSkyColors() {
+  const t = W.timeOfDay;
+  
+  // Sky gradients for different times of day
+  if (t < 0.2) {
+    // Night
+    const s = t / 0.2;
+    return {
+      top: lerpColor([5, 5, 25], [10, 15, 45], s),
+      bottom: lerpColor([10, 10, 30], [25, 20, 50], s),
+      ambient: [20, 20, 50],
+    };
+  } else if (t < 0.3) {
+    // Dawn
+    const s = (t - 0.2) / 0.1;
+    return {
+      top: lerpColor([10, 15, 45], [70, 120, 180], s),
+      bottom: lerpColor([25, 20, 50], [220, 120, 80], s),
+      ambient: lerpColor([20, 20, 50], [180, 140, 100], s),
+    };
+  } else if (t < 0.45) {
+    // Morning
+    const s = (t - 0.3) / 0.15;
+    return {
+      top: lerpColor([70, 120, 180], [100, 160, 220], s),
+      bottom: lerpColor([220, 120, 80], [170, 200, 230], s),
+      ambient: lerpColor([180, 140, 100], [200, 200, 210], s),
+    };
+  } else if (t < 0.65) {
+    // Midday
+    const s = (t - 0.45) / 0.2;
+    const warm = W.temperature > 0 ? W.temperature * 20 : 0;
+    return {
+      top: [90 + warm, 150, 220 - warm],
+      bottom: [160 + warm, 200, 235 - warm * 0.5],
+      ambient: [210, 210, 220],
+    };
+  } else if (t < 0.78) {
+    // Afternoon to dusk
+    const s = (t - 0.65) / 0.13;
+    return {
+      top: lerpColor([100, 150, 210], [60, 40, 80], s),
+      bottom: lerpColor([170, 200, 230], [230, 100, 50], s),
+      ambient: lerpColor([210, 210, 220], [180, 100, 60], s),
+    };
+  } else {
+    // Night
+    const s = (t - 0.78) / 0.22;
+    return {
+      top: lerpColor([60, 40, 80], [5, 5, 25], s),
+      bottom: lerpColor([230, 100, 50], [10, 10, 30], Math.min(1, s * 1.5)),
+      ambient: lerpColor([180, 100, 60], [20, 20, 50], s),
+    };
+  }
+}
+
+// === WORLD NAME GENERATOR ===
+function generateWorldName() {
+  const prefixes = [
+    'Ae', 'Al', 'An', 'Ar', 'As', 'Be', 'Br', 'Ca', 'Ce', 'Cy',
+    'Da', 'De', 'El', 'Em', 'En', 'Er', 'Es', 'Fa', 'Fe', 'Ga',
+    'Ha', 'He', 'Il', 'Im', 'In', 'Ir', 'Ka', 'Ke', 'La', 'Le',
+    'Lu', 'Ma', 'Me', 'Mi', 'Mo', 'Na', 'Ne', 'No', 'Nu', 'Or',
+    'Pa', 'Pe', 'Qu', 'Ra', 'Re', 'Ri', 'Ro', 'Sa', 'Se', 'Si',
+    'So', 'Su', 'Ta', 'Te', 'Th', 'Ti', 'To', 'Ul', 'Um', 'Un',
+    'Va', 'Ve', 'Vi', 'Vo', 'Wa', 'We', 'Ya', 'Ye', 'Za', 'Ze',
+  ];
+  
+  const middles = [
+    'lor', 'ren', 'lis', 'nar', 'vel', 'mos', 'rin', 'dan', 'fen',
+    'gor', 'hal', 'kin', 'lon', 'mar', 'nal', 'por', 'ran', 'sel',
+    'tan', 'ven', 'win', 'dra', 'gra', 'sha', 'tha', 'zar', 'phi',
+    'chi', 'kri', 'bel', 'col', 'dil', 'ful', 'gul', 'nir', 'phe',
+  ];
+  
+  const suffixes = [
+    'ia', 'is', 'os', 'us', 'a', 'e', 'i', 'on', 'en', 'an',
+    'or', 'ar', 'ith', 'oth', 'ean', 'ion', 'ium', 'alis',
+    'ene', 'ine', 'orn', 'eld', 'und', 'ast', 'est',
+  ];
+  
+  const p = prefixes[(rng() * prefixes.length) | 0];
+  const m = middles[(rng() * middles.length) | 0];
+  const s = suffixes[(rng() * suffixes.length) | 0];
+  
+  return rng() > 0.4 ? p + m + s : p + s;
+}
+
+const worldName = generateWorldName();
+
+// === STARS ===
+const stars = [];
+const isNight = W.timeOfDay < 0.25 || W.timeOfDay > 0.75;
+if (isNight) {
+  const starCount = 150 + (rng() * 200) | 0;
+  for (let i = 0; i < starCount; i++) {
+    stars.push({
+      x: rng(),
+      y: rng() * 0.6,
+      size: rng() * 1.5 + 0.3,
+      brightness: 0.3 + rng() * 0.7,
+      twinkleSpeed: 1 + rng() * 3,
+      twinkleOffset: rng() * Math.PI * 2,
+    });
+  }
+}
+
+// === CLOUDS ===
+const clouds = [];
+const cloudCount = (3 + W.cloudCover * 12) | 0;
+for (let i = 0; i < cloudCount; i++) {
+  clouds.push({
+    x: rng() * width * 1.5 - width * 0.25,
+    y: rng() * height * 0.3 + height * 0.02,
+    width: 80 + rng() * 200,
+    height: 20 + rng() * 40,
+    puffs: Array.from({ length: 3 + (rng() * 5) | 0 }, () => ({
+      ox: (rng() - 0.5) * 1,
+      oy: (rng() - 0.5) * 0.4,
+      r: 0.3 + rng() * 0.7,
+    })),
+    speed: (0.1 + rng() * 0.3) * (W.windSpeed + 0.5),
+    opacity: 0.15 + rng() * 0.35,
+  });
+}
+
+// === TERRAIN GENERATION ===
+function getTerrainHeight(x) {
+  const nx = x * W.terrainScale + W.terrainOffset;
+  // Base shape: gentle rolling using fewer octaves
+  let h = fbm(nx, 0, 3, 2, 0.45) * 0.5 + 0.5; // 0-1
+  // Add fine detail on top
+  h += fbm(nx * 3, 0.7, 2, 2, 0.3) * 0.08;
+  h = Math.pow(Math.max(0, Math.min(1, h)), 1.1 - W.hilliness * 0.3);
+  // Smooth: bias toward mid-range to avoid extreme spikes
+  h = h * 0.7 + 0.15;
+  return h;
+}
+
+// Pre-compute terrain
+const terrainPoints = [];
+const terrainResolution = 2;
+for (let x = 0; x <= width; x += terrainResolution) {
+  terrainPoints.push({
+    x: x,
+    h: getTerrainHeight(x),
+  });
+}
+
+// === TREES ===
+function generateTree(x, groundY, type, scale) {
+  return { x, groundY, type, scale, sway: rng() * Math.PI * 2 };
+}
+
+const trees = [];
+const treeSpacing = Math.max(8, 40 - W.treeDensity * 30);
+for (let i = 0; i < terrainPoints.length; i++) {
+  const tp = terrainPoints[i];
+  const groundY = height - tp.h * height * 0.5;
+  const waterY = height - W.waterLevel * height * 0.5;
+  
+  if (W.hasWater && groundY > waterY) continue; // Don't place trees in water
+  
+  if (rng() < W.treeDensity * 0.15) {
+    const type = W.temperature < -0.2 ? 'pine' : 
+                 W.temperature > 0.5 ? 'palm' : 
+                 rng() > 0.5 ? 'deciduous' : 'pine';
+    const scale = 0.5 + rng() * 0.8;
+    trees.push(generateTree(tp.x, groundY, type, scale));
+  }
+}
+
+// === GRASS BLADES ===
+const grassBlades = [];
+const grassCount = (W.grassDensity * 600 + 100) | 0;
+for (let i = 0; i < grassCount; i++) {
+  const xIdx = (rng() * terrainPoints.length) | 0;
+  const tp = terrainPoints[Math.min(xIdx, terrainPoints.length - 1)];
+  const groundY = height - tp.h * height * 0.5;
+  const waterY = height - W.waterLevel * height * 0.5;
+  
+  if (W.hasWater && groundY > waterY) continue;
+  
+  grassBlades.push({
+    x: tp.x + (rng() - 0.5) * terrainResolution,
+    groundY: groundY,
+    height: 5 + rng() * 15,
+    phase: rng() * Math.PI * 2,
+    speed: 0.5 + rng() * 1.5,
+  });
+}
+
+// === PARTICLES ===
+const particles = [];
+
+function spawnParticle() {
+  if (W.hasFireflies && isNight) {
+    return {
+      type: 'firefly',
+      x: rng() * width,
+      y: height * 0.4 + rng() * height * 0.4,
+      vx: (rng() - 0.5) * 0.5,
+      vy: (rng() - 0.5) * 0.3,
+      glow: rng() * Math.PI * 2,
+      glowSpeed: 1 + rng() * 2,
+      life: 200 + rng() * 400,
+    };
+  }
+  
+  if (W.snowLevel > 0) {
+    return {
+      type: 'snow',
+      x: rng() * width * 1.2 - width * 0.1,
+      y: -10,
+      vx: W.windSpeed * 0.5 + (rng() - 0.5) * 0.3,
+      vy: 0.5 + rng() * 1,
+      size: 1 + rng() * 3,
+      wobble: rng() * Math.PI * 2,
+      life: 9999,
+    };
+  }
+  
+  if (W.moisture > 0.5 && rng() > 0.3) {
+    return {
+      type: 'rain',
+      x: rng() * width * 1.2 - width * 0.1,
+      y: -10,
+      vx: W.windSpeed * 2,
+      vy: 6 + rng() * 4,
+      length: 8 + rng() * 15,
+      life: 9999,
+    };
+  }
+  
+  // Leaf / dust mote
+  return {
+    type: 'mote',
+    x: rng() * width,
+    y: rng() * height * 0.7,
+    vx: W.windSpeed * 0.3 + (rng() - 0.5) * 0.2,
+    vy: (rng() - 0.5) * 0.1,
+    size: 1 + rng() * 2,
+    wobbleX: rng() * Math.PI * 2,
+    wobbleY: rng() * Math.PI * 2,
+    life: 300 + rng() * 500,
+  };
+}
+
+// Initial particles
+const maxParticles = 80;
+for (let i = 0; i < maxParticles * 0.5; i++) {
+  const p = spawnParticle();
+  p.y = rng() * height; // Spread initial particles
+  particles.push(p);
+}
+
+// === AURORA ===
+const auroraWaves = [];
+if (W.hasAurora) {
+  for (let i = 0; i < 3; i++) {
+    auroraWaves.push({
+      y: height * (0.05 + rng() * 0.2),
+      amplitude: 20 + rng() * 40,
+      wavelength: 200 + rng() * 300,
+      speed: 0.2 + rng() * 0.5,
+      hue: 100 + rng() * 60, // Green to cyan
+      opacity: 0.1 + rng() * 0.15,
+      phase: rng() * Math.PI * 2,
+    });
+  }
+}
+
+// === DRAWING FUNCTIONS ===
+
+function drawSky(time) {
+  const colors = getSkyColors();
+  const grad = ctx.createLinearGradient(0, 0, 0, height);
+  grad.addColorStop(0, rgb(colors.top));
+  grad.addColorStop(1, rgb(colors.bottom));
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+  return colors;
+}
+
+function drawStars(time) {
+  for (const star of stars) {
+    const twinkle = Math.sin(time * star.twinkleSpeed + star.twinkleOffset) * 0.3 + 0.7;
+    const alpha = star.brightness * twinkle;
+    ctx.fillStyle = rgba([255, 255, 240], alpha);
+    ctx.beginPath();
+    ctx.arc(star.x * width, star.y * height, star.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawMoon(time) {
+  if (W.timeOfDay > 0.3 && W.timeOfDay < 0.7) return;
+  
+  const moonX = width * (0.6 + rng() * 0.3); // Seeded position
+  const moonY = height * 0.1 + Math.sin(W.timeOfDay * Math.PI) * height * 0.15;
+  const moonSize = 15 + rng() * 10;
+  
+  // Glow
+  const glow = ctx.createRadialGradient(moonX, moonY, moonSize, moonX, moonY, moonSize * 4);
+  glow.addColorStop(0, 'rgba(200, 210, 255, 0.15)');
+  glow.addColorStop(1, 'rgba(200, 210, 255, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(moonX - moonSize * 4, moonY - moonSize * 4, moonSize * 8, moonSize * 8);
+  
+  // Moon body
+  ctx.fillStyle = 'rgba(220, 225, 240, 0.9)';
+  ctx.beginPath();
+  ctx.arc(moonX, moonY, moonSize, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawSun() {
+  if (W.timeOfDay < 0.25 || W.timeOfDay > 0.8) return;
+  
+  const sunProgress = (W.timeOfDay - 0.25) / 0.55;
+  const sunX = width * (0.1 + sunProgress * 0.8);
+  const sunY = height * (0.4 - Math.sin(sunProgress * Math.PI) * 0.35);
+  const sunSize = 20;
+  
+  // Glow
+  const glow = ctx.createRadialGradient(sunX, sunY, sunSize * 0.5, sunX, sunY, sunSize * 6);
+  glow.addColorStop(0, 'rgba(255, 240, 200, 0.4)');
+  glow.addColorStop(0.3, 'rgba(255, 220, 150, 0.1)');
+  glow.addColorStop(1, 'rgba(255, 200, 100, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(sunX - sunSize * 6, sunY - sunSize * 6, sunSize * 12, sunSize * 12);
+  
+  // Sun body
+  ctx.fillStyle = 'rgba(255, 240, 210, 0.95)';
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, sunSize, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawAurora(time) {
+  for (const wave of auroraWaves) {
+    ctx.beginPath();
+    ctx.moveTo(0, wave.y);
+    
+    for (let x = 0; x <= width; x += 4) {
+      const y = wave.y + 
+        Math.sin(x / wave.wavelength + time * wave.speed + wave.phase) * wave.amplitude +
+        Math.sin(x / (wave.wavelength * 0.5) + time * wave.speed * 1.3) * wave.amplitude * 0.3;
+      ctx.lineTo(x, y);
+    }
+    
+    ctx.lineTo(width, wave.y + wave.amplitude * 2);
+    ctx.lineTo(0, wave.y + wave.amplitude * 2);
+    ctx.closePath();
+    
+    const grad = ctx.createLinearGradient(0, wave.y - wave.amplitude, 0, wave.y + wave.amplitude * 2);
+    grad.addColorStop(0, `hsla(${wave.hue}, 80%, 60%, 0)`);
+    grad.addColorStop(0.3, `hsla(${wave.hue}, 80%, 60%, ${wave.opacity})`);
+    grad.addColorStop(0.6, `hsla(${wave.hue + 20}, 70%, 50%, ${wave.opacity * 0.6})`);
+    grad.addColorStop(1, `hsla(${wave.hue + 40}, 60%, 40%, 0)`);
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+}
+
+function drawClouds(time) {
+  const skyColors = getSkyColors();
+  const cloudBright = (skyColors.ambient[0] + skyColors.ambient[1] + skyColors.ambient[2]) / 3;
+  const isLit = cloudBright > 100;
+  
+  for (const cloud of clouds) {
+    const cx = ((cloud.x + time * cloud.speed * 20) % (width + cloud.width * 2)) - cloud.width;
+    
+    for (const puff of cloud.puffs) {
+      const px = cx + puff.ox * cloud.width;
+      const py = cloud.y + puff.oy * cloud.height;
+      const pr = puff.r * Math.min(cloud.width, cloud.height) * 0.6;
+      
+      const grad = ctx.createRadialGradient(px, py, 0, px, py, pr);
+      if (isLit) {
+        grad.addColorStop(0, `rgba(255, 255, 255, ${cloud.opacity})`);
+        grad.addColorStop(1, `rgba(255, 255, 255, 0)`);
+      } else {
+        grad.addColorStop(0, `rgba(180, 190, 220, ${cloud.opacity})`);
+        grad.addColorStop(1, `rgba(180, 190, 220, 0)`);
+      }
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(px, py, pr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawMountains(skyColors) {
+  // Background mountain range
+  const layers = [
+    { scale: 0.001, heightMul: 0.25, offset: 100, alpha: 0.15 },
+    { scale: 0.002, heightMul: 0.3, offset: 200, alpha: 0.25 },
+    { scale: 0.003, heightMul: 0.2, offset: 300, alpha: 0.35 },
+  ];
+  
+  for (const layer of layers) {
+    const color = lerpColor(skyColors.ambient, [30, 30, 50], layer.alpha);
+    ctx.fillStyle = rgba(color, 0.6);
+    ctx.beginPath();
+    ctx.moveTo(0, height);
+    
+    for (let x = 0; x <= width; x += 3) {
+      const h = fbm(x * layer.scale + layer.offset + W.terrainOffset, 0.5, 4) * 0.5 + 0.5;
+      const y = height - h * height * layer.heightMul - height * 0.15;
+      ctx.lineTo(x, y);
+    }
+    
+    ctx.lineTo(width, height);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function drawTerrain(time, skyColors) {
+  const waterY = W.hasWater ? height - W.waterLevel * height * 0.5 : height + 10;
+  
+  // Ground color based on biome
+  let groundColor, groundColorDark;
+  if (W.temperature < -0.3) {
+    // Snow/tundra
+    groundColor = [230, 235, 240];
+    groundColorDark = [200, 210, 220];
+  } else if (W.temperature > 0.5 && W.moisture < -0.2) {
+    // Desert
+    groundColor = [200, 180, 140];
+    groundColorDark = [170, 150, 110];
+  } else if (W.temperature > 0.3 && W.moisture > 0.3) {
+    // Tropical
+    groundColor = [50, 140, 60];
+    groundColorDark = [30, 100, 40];
+  } else {
+    // Temperate
+    groundColor = [70, 140, 50];
+    groundColorDark = [50, 110, 35];
+  }
+  
+  // Apply lighting from sky
+  const lightFactor = Math.max(0.2, (skyColors.ambient[0] + skyColors.ambient[1] + skyColors.ambient[2]) / (3 * 255));
+  groundColor = groundColor.map(c => c * lightFactor);
+  groundColorDark = groundColorDark.map(c => c * lightFactor);
+  
+  // Draw terrain fill
+  ctx.beginPath();
+  ctx.moveTo(0, height);
+  for (const tp of terrainPoints) {
+    const y = height - tp.h * height * 0.5;
+    ctx.lineTo(tp.x, y);
+  }
+  ctx.lineTo(width, height);
+  ctx.closePath();
+  
+  const terrainGrad = ctx.createLinearGradient(0, height * 0.4, 0, height);
+  terrainGrad.addColorStop(0, rgb(groundColor));
+  terrainGrad.addColorStop(1, rgb(groundColorDark));
+  ctx.fillStyle = terrainGrad;
+  ctx.fill();
+  
+  // Draw water
+  if (W.hasWater) {
+    const waterGrad = ctx.createLinearGradient(0, waterY, 0, height);
+    
+    if (isNight) {
+      waterGrad.addColorStop(0, 'rgba(20, 30, 60, 0.7)');
+      waterGrad.addColorStop(1, 'rgba(10, 15, 35, 0.9)');
+    } else {
+      waterGrad.addColorStop(0, 'rgba(40, 100, 160, 0.5)');
+      waterGrad.addColorStop(0.5, 'rgba(30, 80, 140, 0.6)');
+      waterGrad.addColorStop(1, 'rgba(20, 60, 120, 0.7)');
+    }
+    
+    ctx.fillStyle = waterGrad;
+    ctx.fillRect(0, waterY, width, height - waterY);
+    
+    // Water ripples
+    ctx.strokeStyle = isNight ? 'rgba(80, 100, 150, 0.15)' : 'rgba(150, 200, 255, 0.2)';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i < 8; i++) {
+      const ry = waterY + (height - waterY) * (i / 8) + 5;
+      ctx.beginPath();
+      for (let x = 0; x <= width; x += 4) {
+        const wave = Math.sin(x * 0.02 + time * 0.8 + i * 1.5) * 2 +
+                     Math.sin(x * 0.005 + time * 0.3) * 3;
+        ctx.lineTo(x, ry + wave);
+      }
+      ctx.stroke();
+    }
+  }
+}
+
+function drawGrass(time) {
+  const skyColors = getSkyColors();
+  const lightFactor = Math.max(0.2, (skyColors.ambient[0] + skyColors.ambient[1] + skyColors.ambient[2]) / (3 * 255));
+  
+  let grassColor;
+  if (W.temperature < -0.3) {
+    grassColor = [180, 190, 200]; // Frost
+  } else if (W.temperature > 0.5 && W.moisture < -0.2) {
+    grassColor = [180, 160, 100]; // Dry
+  } else {
+    grassColor = [60, 160, 50]; // Green
+  }
+  grassColor = grassColor.map(c => c * lightFactor);
+  
+  ctx.strokeStyle = rgba(grassColor, 0.4);
+  ctx.lineWidth = 1;
+  
+  for (const blade of grassBlades) {
+    const sway = Math.sin(time * blade.speed + blade.phase) * (3 + Math.abs(W.windSpeed) * 5);
+    ctx.beginPath();
+    ctx.moveTo(blade.x, blade.groundY);
+    ctx.quadraticCurveTo(
+      blade.x + sway * 0.5, blade.groundY - blade.height * 0.6,
+      blade.x + sway, blade.groundY - blade.height
+    );
+    ctx.stroke();
+  }
+}
+
+function drawTree(tree, time) {
+  const skyColors = getSkyColors();
+  const lightFactor = Math.max(0.25, (skyColors.ambient[0] + skyColors.ambient[1] + skyColors.ambient[2]) / (3 * 255));
+  const sway = Math.sin(time * 0.5 + tree.sway) * (2 + Math.abs(W.windSpeed) * 3) * tree.scale;
+  
+  const x = tree.x;
+  const y = tree.groundY;
+  const s = tree.scale;
+  
+  if (tree.type === 'pine') {
+    // Short trunk
+    const trunkH = 10 * s;
+    ctx.fillStyle = rgba([70, 45, 25].map(c => c * lightFactor), 1);
+    ctx.fillRect(x - 1.5 * s, y - trunkH, 3 * s, trunkH);
+    
+    // Foliage layers — larger, more overlap
+    const foliageColor = W.snowLevel > 0.3 ? [180, 210, 220] : [25, 80, 25];
+    const foliageDark = W.snowLevel > 0.3 ? [150, 180, 195] : [15, 60, 15];
+    for (let i = 0; i < 4; i++) {
+      const ly = y - trunkH - i * 10 * s;
+      const lw = (22 - i * 4) * s;
+      const lh = 16 * s;
+      // Shadow layer
+      ctx.fillStyle = rgba(foliageDark.map(c => c * lightFactor), 0.7);
+      ctx.beginPath();
+      ctx.moveTo(x + sway * (1 + i * 0.2), ly - lh);
+      ctx.lineTo(x - lw + sway * (1 + i * 0.15) + 1, ly + 2);
+      ctx.lineTo(x + lw + sway * (1 + i * 0.15) + 1, ly + 2);
+      ctx.closePath();
+      ctx.fill();
+      // Main layer
+      ctx.fillStyle = rgba(foliageColor.map(c => c * lightFactor), 0.9);
+      ctx.beginPath();
+      ctx.moveTo(x + sway * (1 + i * 0.2), ly - lh);
+      ctx.lineTo(x - lw + sway * (1 + i * 0.15), ly);
+      ctx.lineTo(x + lw + sway * (1 + i * 0.15), ly);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (tree.type === 'deciduous') {
+    // Trunk
+    const trunkH = 20 * s;
+    ctx.fillStyle = rgba([80, 55, 30].map(c => c * lightFactor), 1);
+    ctx.fillRect(x - 2 * s, y - trunkH, 4 * s, trunkH);
+    
+    // Branches (subtle)
+    ctx.strokeStyle = rgba([80, 55, 30].map(c => c * lightFactor), 0.6);
+    ctx.lineWidth = 1.5 * s;
+    ctx.beginPath();
+    ctx.moveTo(x, y - trunkH * 0.7);
+    ctx.lineTo(x - 8 * s + sway * 0.3, y - trunkH - 5 * s);
+    ctx.moveTo(x, y - trunkH * 0.8);
+    ctx.lineTo(x + 7 * s + sway * 0.3, y - trunkH - 3 * s);
+    ctx.stroke();
+    
+    // Canopy — multiple overlapping circles for fullness
+    const canopyColor = W.temperature > 0 ? [35, 125, 35] : [45, 115, 25];
+    const canopyY = y - trunkH - 10 * s;
+    const cr = 16 * s;
+    
+    // Dark under-canopy
+    ctx.fillStyle = rgba(canopyColor.map(c => Math.max(0, c * lightFactor * 0.7)), 0.7);
+    ctx.beginPath();
+    ctx.arc(x + sway + 2, canopyY + 3, cr, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Main canopy
+    ctx.fillStyle = rgba(canopyColor.map(c => c * lightFactor), 0.85);
+    ctx.beginPath();
+    ctx.arc(x + sway, canopyY, cr, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + sway - 8 * s, canopyY + 3 * s, cr * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x + sway + 9 * s, canopyY + 2 * s, cr * 0.75, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Highlight
+    ctx.fillStyle = rgba(canopyColor.map(c => Math.min(255, c * lightFactor * 1.4)), 0.25);
+    ctx.beginPath();
+    ctx.arc(x + sway - 4 * s, canopyY - 4 * s, cr * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (tree.type === 'palm') {
+    // Curved trunk
+    ctx.strokeStyle = rgba([110, 80, 40].map(c => c * lightFactor), 0.9);
+    ctx.lineWidth = 3.5 * s;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.quadraticCurveTo(x + 6 * s, y - 25 * s, x + sway + 4 * s, y - 45 * s);
+    ctx.stroke();
+    
+    // Fronds — drooping leaf shapes
+    const frondColor = [45, 150, 35];
+    const topX = x + sway + 4 * s;
+    const topY = y - 45 * s;
+    ctx.lineWidth = 2 * s;
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 7; i++) {
+      const angle = (i / 7) * Math.PI * 2 + time * 0.08 + tree.sway;
+      const droop = Math.abs(Math.sin(angle)) * 15 * s;
+      const len = 22 * s;
+      const fx = topX + Math.cos(angle) * len;
+      const fy = topY + Math.sin(angle) * 6 * s + droop;
+      
+      ctx.strokeStyle = rgba(frondColor.map(c => c * lightFactor), 0.8);
+      ctx.beginPath();
+      ctx.moveTo(topX, topY);
+      ctx.quadraticCurveTo(
+        topX + Math.cos(angle) * len * 0.6,
+        topY + Math.sin(angle) * 3 * s,
+        fx, fy
+      );
+      ctx.stroke();
+    }
+    
+    // Coconuts (sometimes)
+    if (rng() > 0.5) {
+      ctx.fillStyle = rgba([100, 70, 30].map(c => c * lightFactor), 0.8);
+      for (let i = 0; i < 2; i++) {
+        ctx.beginPath();
+        ctx.arc(topX + (i * 4 - 2) * s, topY + 3 * s, 2 * s, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+}
+
+function drawTrees(time) {
+  // Sort by Y (depth)
+  trees.sort((a, b) => a.groundY - b.groundY);
+  for (const tree of trees) {
+    drawTree(tree, time);
+  }
+}
+
+function updateAndDrawParticles(time, dt) {
+  // Spawn new particles
+  while (particles.length < maxParticles) {
+    particles.push(spawnParticle());
+  }
+  
+  const skyColors = getSkyColors();
+  
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= 1;
+    
+    if (p.life <= 0 || p.y > height + 20 || p.x < -50 || p.x > width + 50) {
+      particles.splice(i, 1);
+      continue;
+    }
+    
+    if (p.type === 'firefly') {
+      p.x += p.vx + Math.sin(time * 2 + p.glow) * 0.3;
+      p.y += p.vy + Math.cos(time * 1.5 + p.glow) * 0.2;
+      p.vx += (rng() - 0.5) * 0.05;
+      p.vy += (rng() - 0.5) * 0.05;
+      p.vx *= 0.98;
+      p.vy *= 0.98;
+      
+      const glow = Math.sin(time * p.glowSpeed + p.glow) * 0.5 + 0.5;
+      if (glow > 0.3) {
+        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 8);
+        grad.addColorStop(0, `rgba(180, 255, 100, ${glow * 0.6})`);
+        grad.addColorStop(1, 'rgba(180, 255, 100, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(p.x - 8, p.y - 8, 16, 16);
+        
+        ctx.fillStyle = `rgba(200, 255, 150, ${glow})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (p.type === 'snow') {
+      p.x += p.vx + Math.sin(time + p.wobble) * 0.5;
+      p.y += p.vy;
+      
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (p.type === 'rain') {
+      p.x += p.vx;
+      p.y += p.vy;
+      
+      ctx.strokeStyle = 'rgba(150, 180, 220, 0.3)';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x - p.vx * 0.5, p.y - p.length);
+      ctx.stroke();
+    } else if (p.type === 'mote') {
+      p.x += p.vx + Math.sin(time * 0.5 + p.wobbleX) * 0.2;
+      p.y += p.vy + Math.sin(time * 0.3 + p.wobbleY) * 0.15;
+      
+      const alpha = Math.min(0.4, p.life / 100);
+      ctx.fillStyle = rgba(skyColors.ambient, alpha * 0.3);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawFog() {
+  if (!W.hasFog) return;
+  
+  const skyColors = getSkyColors();
+  const fogColor = lerpColor(skyColors.bottom, [200, 200, 210], 0.5);
+  
+  const grad = ctx.createLinearGradient(0, height * 0.5, 0, height);
+  grad.addColorStop(0, rgba(fogColor, 0));
+  grad.addColorStop(0.5, rgba(fogColor, 0.15));
+  grad.addColorStop(1, rgba(fogColor, 0.4));
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, height * 0.5, width, height * 0.5);
+}
+
+// === WILDFLOWERS ===
+const flowers = [];
+if (W.temperature > -0.2 && W.moisture > -0.3) {
+  const flowerColors = W.temperature > 0.3
+    ? [[255,100,120],[255,180,50],[255,220,100],[200,80,180]] // Tropical
+    : [[220,180,220],[255,255,150],[200,220,255],[255,200,200]]; // Temperate
+  
+  for (let i = 0; i < terrainPoints.length; i++) {
+    const tp = terrainPoints[i];
+    const groundY = height - tp.h * height * 0.5;
+    const waterY = W.hasWater ? height - W.waterLevel * height * 0.5 : height + 10;
+    if (W.hasWater && groundY > waterY - 5) continue;
+    
+    if (rng() < 0.04 * (1 + W.moisture)) {
+      flowers.push({
+        x: tp.x + (rng() - 0.5) * 6,
+        y: groundY - 2 - rng() * 6,
+        size: 1.5 + rng() * 2.5,
+        color: flowerColors[(rng() * flowerColors.length) | 0],
+        phase: rng() * Math.PI * 2,
+      });
+    }
+  }
+}
+
+function drawFlowers(time) {
+  const skyColors = getSkyColors();
+  const lightFactor = Math.max(0.3, (skyColors.ambient[0] + skyColors.ambient[1] + skyColors.ambient[2]) / (3 * 255));
+  
+  for (const f of flowers) {
+    const sway = Math.sin(time * 1.2 + f.phase) * 1.5;
+    const lit = f.color.map(c => Math.min(255, c * lightFactor));
+    ctx.fillStyle = rgba(lit, 0.85);
+    ctx.beginPath();
+    ctx.arc(f.x + sway, f.y, f.size, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Flower center
+    if (f.size > 2) {
+      ctx.fillStyle = rgba([255, 255, 200].map(c => c * lightFactor), 0.7);
+      ctx.beginPath();
+      ctx.arc(f.x + sway, f.y, f.size * 0.35, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+// === VIGNETTE ===
+function drawVignette() {
+  // Radial gradient from center (clear) to edges (dark)
+  const cx = width / 2;
+  const cy = height / 2;
+  const radius = Math.max(width, height) * 0.8;
+  
+  const grad = ctx.createRadialGradient(cx, cy, radius * 0.3, cx, cy, radius);
+  grad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  grad.addColorStop(0.7, 'rgba(0, 0, 0, 0)');
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0.4)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+}
+
+// === SHOOTING STARS ===
+const shootingStars = [];
+
+function maybeSpawnShootingStar(time) {
+  if (!isNight || !W.hasMeteors) return;
+  if (rng() < 0.001) { // Rare
+    shootingStars.push({
+      x: rng() * width,
+      y: rng() * height * 0.3,
+      vx: 3 + rng() * 5,
+      vy: 1 + rng() * 3,
+      life: 30 + rng() * 40,
+      maxLife: 30 + rng() * 40,
+    });
+  }
+}
+
+function drawShootingStars() {
+  for (let i = shootingStars.length - 1; i >= 0; i--) {
+    const s = shootingStars[i];
+    s.x += s.vx;
+    s.y += s.vy;
+    s.life -= 1;
+    
+    if (s.life <= 0) {
+      shootingStars.splice(i, 1);
+      continue;
+    }
+    
+    const alpha = s.life / s.maxLife;
+    const tailLen = 30;
+    
+    const grad = ctx.createLinearGradient(
+      s.x, s.y,
+      s.x - s.vx * tailLen * 0.3, s.y - s.vy * tailLen * 0.3
+    );
+    grad.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
+    grad.addColorStop(1, `rgba(255, 255, 255, 0)`);
+    
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(s.x - s.vx * tailLen * 0.3, s.y - s.vy * tailLen * 0.3);
+    ctx.stroke();
+    
+    // Head glow
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// === PHILOSOPHY QUOTES ===
+const quotes = [
+  "This world exists only in this moment.",
+  "Nothing here will persist beyond your visit.",
+  "Every landscape is a conversation that happens once.",
+  "The impermanent is the most real.",
+  "You are the only witness to this place.",
+  "What is seen cannot be unseen, but it can be unrepeatable.",
+  "This moment is the entire history of this world.",
+  "Beauty that cannot be possessed is the purest kind.",
+  "The river you see has never been seen before.",
+  "Closing this tab is an act of gentle destruction.",
+  "Some things are precious because they cannot last.",
+  "You found a world. Soon it will find its end.",
+];
+const chosenQuote = quotes[(rng() * quotes.length) | 0];
+
+// === UI ===
+function formatAge(ms) {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds} second${seconds !== 1 ? 's' : ''} old`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (minutes < 60) return `${minutes}m ${secs}s old`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours}h ${mins}m old`;
+}
+
+function updateUI() {
+  const skyColors = getSkyColors();
+  const brightness = (skyColors.ambient[0] + skyColors.ambient[1] + skyColors.ambient[2]) / 3;
+  const textColor = brightness > 128 ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)';
+  const textColorDim = brightness > 128 ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)';
+  
+  const nameEl = document.getElementById('world-name');
+  const ageEl = document.getElementById('world-age');
+  const philEl = document.getElementById('philosophy');
+  
+  nameEl.style.color = textColor;
+  ageEl.style.color = textColorDim;
+  philEl.style.color = textColor;
+  
+  nameEl.textContent = worldName;
+  ageEl.textContent = formatAge(Date.now() - BIRTH);
+  philEl.textContent = chosenQuote;
+}
+
+// === MAIN LOOP ===
+let startTime = null;
+let running = false;
+
+function render(timestamp) {
+  if (!startTime) startTime = timestamp;
+  const time = (timestamp - startTime) / 1000;
+  
+  const skyColors = drawSky(time);
+  
+  if (isNight) drawStars(time);
+  drawMoon(time);
+  drawSun();
+  if (W.hasAurora) drawAurora(time);
+  maybeSpawnShootingStar(time);
+  drawShootingStars();
+  drawClouds(time);
+  drawMountains(skyColors);
+  drawTerrain(time, skyColors);
+  drawGrass(time);
+  drawFlowers(time);
+  drawTrees(time);
+  updateAndDrawParticles(time, 1/60);
+  drawFog();
+  drawVignette();
+  
+  updateUI();
+  
+  if (running) requestAnimationFrame(render);
+}
+
+// === INTRO SEQUENCE ===
+function start() {
+  const introEl = document.getElementById('intro');
+  const introText = document.getElementById('intro-text');
+  const worldInfo = document.getElementById('world-info');
+  const philosophy = document.getElementById('philosophy');
+  
+  // Set intro text color
+  introText.style.color = 'rgba(255, 255, 255, 0.7)';
+  
+  // Intro message
+  introText.textContent = 'A world is being born…';
+  introText.style.opacity = '0';
+  
+  setTimeout(() => {
+    introText.style.transition = 'opacity 2s ease-in';
+    introText.style.opacity = '1';
+  }, 300);
+  
+  setTimeout(() => {
+    introText.style.transition = 'opacity 1.5s ease-out';
+    introText.style.opacity = '0';
+  }, 3000);
+  
+  setTimeout(() => {
+    introText.textContent = worldName;
+    introText.style.letterSpacing = '6px';
+    introText.style.fontSize = '18px';
+    introText.style.transition = 'opacity 2s ease-in';
+    introText.style.opacity = '1';
+  }, 5000);
+  
+  setTimeout(() => {
+    // Start rendering behind the intro
+    running = true;
+    requestAnimationFrame(render);
+  }, 6000);
+  
+  setTimeout(() => {
+    // Fade out intro
+    introEl.classList.add('fading');
+  }, 7500);
+  
+  setTimeout(() => {
+    introEl.style.display = 'none';
+    worldInfo.classList.add('visible');
+  }, 10500);
+  
+  setTimeout(() => {
+    philosophy.classList.add('visible');
+  }, 14000);
+}
+
+// Warn before leaving
+window.addEventListener('beforeunload', (e) => {
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+// Start
+start();
+</script>
+</body>
+</html>
